@@ -44,8 +44,8 @@ void LoadCouplingMatrix(double*, string, int);
 void SetInitialConditionsAndParameters(double*, double*, double*, double*, double*, double*);
 
 __global__ void Integrator(double*, double*, double*, const double* __restrict__, int);
-__forceinline__ __device__ double OdeFunction(double*, double, double*, double*, double*, double*, double*, double&, const double* __restrict__);
-__forceinline__ __device__ void LinearEquationSolver(double*, double, double*, double*, double*, double, const double* __restrict__);
+__forceinline__ __device__ double OdeFunction(double*, double, double*, double*, double, double*, double*, double&, const double* __restrict__);
+__forceinline__ __device__ void LinearEquationSolver(double*, double, double, double*, double*, double, const double* __restrict__);
 __forceinline__ __device__ void BlockReductionOmega(double*, double&);
 __forceinline__ __device__ void BlockReductionMin(double*);
 
@@ -153,6 +153,7 @@ __global__ void Integrator(double* g_StateX1, double* g_StateX2, double* g_Param
 	double rx[2];
 	
 	double rb;
+	double rD1;
 	
 	double rError;
 	double rTolerance;
@@ -166,7 +167,7 @@ __global__ void Integrator(double* g_StateX1, double* g_StateX2, double* g_Param
 		rP[i] = g_Parameters[tid+i*ParameterShift];
 	
 	// SHARED MEMORY MANAGEMENT
-	__shared__ double sD1[CLUSTER_SIZE];
+	//__shared__ double sD1[CLUSTER_SIZE];
 	__shared__ double sD2[CLUSTER_SIZE];
 	__shared__ double sdx2[CLUSTER_SIZE];
 	
@@ -192,51 +193,51 @@ __global__ void Integrator(double* g_StateX1, double* g_StateX2, double* g_Param
 		if ( threadIdx.x == 0 )
 			st = sT;
 		__syncthreads();
-		rb = OdeFunction(rk1, st, rx, rP, sD1, sD2, sdx2, sO, g_CouplingMatrix);
-		LinearEquationSolver(rk1, rb, sD1, sD2, sdx2, sO, g_CouplingMatrix);
+		rb = OdeFunction(rk1, st, rx, rP, rD1, sD2, sdx2, sO, g_CouplingMatrix);
+		LinearEquationSolver(rk1, rb, rD1, sD2, sdx2, sO, g_CouplingMatrix);
 		
 		for (int i=0; i<2; i++)
 			rx[i] = rX[i] + (1.0/5.0)*rk1[i]*sdt;
 		if ( threadIdx.x == 0 )
 			st = sT + (1.0/5.0)*sdt;
 		__syncthreads();
-		rb = OdeFunction(rk2, st, rx, rP, sD1, sD2, sdx2, sO, g_CouplingMatrix);
-		LinearEquationSolver(rk2, rb, sD1, sD2, sdx2, sO, g_CouplingMatrix);
+		rb = OdeFunction(rk2, st, rx, rP, rD1, sD2, sdx2, sO, g_CouplingMatrix);
+		LinearEquationSolver(rk2, rb, rD1, sD2, sdx2, sO, g_CouplingMatrix);
 		
 		for (int i=0; i<2; i++)
 			rx[i] = rX[i] + ( (3.0/40.0)*rk1[i] + (9.0/40.0)*rk2[i] )*sdt;
 		if ( threadIdx.x == 0 )
 			st = sT + (3.0/10.0)*sdt;
 		__syncthreads();
-		rb = OdeFunction(rk3, st, rx, rP, sD1, sD2, sdx2, sO, g_CouplingMatrix);
-		LinearEquationSolver(rk3, rb, sD1, sD2, sdx2, sO, g_CouplingMatrix);
+		rb = OdeFunction(rk3, st, rx, rP, rD1, sD2, sdx2, sO, g_CouplingMatrix);
+		LinearEquationSolver(rk3, rb, rD1, sD2, sdx2, sO, g_CouplingMatrix);
 		
 		for (int i=0; i<2; i++)
 			rx[i] = rX[i] + ( (3.0/10.0)*rk1[i] + (-9.0/10.0)*rk2[i] + (6.0/5.0)*rk3[i] )*sdt;
 		if ( threadIdx.x == 0 )
 			st = sT + (3.0/5.0)*sdt;
 		__syncthreads();
-		rb = OdeFunction(rk4, st, rx, rP, sD1, sD2, sdx2, sO, g_CouplingMatrix);
-		LinearEquationSolver(rk4, rb, sD1, sD2, sdx2, sO, g_CouplingMatrix);
+		rb = OdeFunction(rk4, st, rx, rP, rD1, sD2, sdx2, sO, g_CouplingMatrix);
+		LinearEquationSolver(rk4, rb, rD1, sD2, sdx2, sO, g_CouplingMatrix);
 		
 		for (int i=0; i<2; i++)
 			rx[i] = rX[i] + ( (-11.0/54.0)*rk1[i] + (5.0/2.0)*rk2[i] + (-70.0/27.0)*rk3[i] + (35.0/27.0)*rk4[i] )*sdt;
 		if ( threadIdx.x == 0 )
 			st = sT + sdt;
 		__syncthreads();
-		rb = OdeFunction(rk5, st, rx, rP, sD1, sD2, sdx2, sO, g_CouplingMatrix);
-		LinearEquationSolver(rk5, rb, sD1, sD2, sdx2, sO, g_CouplingMatrix);
+		rb = OdeFunction(rk5, st, rx, rP, rD1, sD2, sdx2, sO, g_CouplingMatrix);
+		LinearEquationSolver(rk5, rb, rD1, sD2, sdx2, sO, g_CouplingMatrix);
 		
 		for (int i=0; i<2; i++)
 			rx[i] = rX[i] + ( (1631.0/55296.0)*rk1[i] + (175.0/512.0)*rk2[i] + (575.0/13824.0)*rk3[i] + (44275.0/110592.0)*rk4[i] + (253.0/4096.0)*rk5[i] )*sdt;
 		if ( threadIdx.x == 0 )
 			st = sT + (7.0/8.0)*sdt;
 		__syncthreads();
-		rb = OdeFunction(rk6, st, rx, rP, sD1, sD2, sdx2, sO, g_CouplingMatrix);
-		LinearEquationSolver(rk6, rb, sD1, sD2, sdx2, sO, g_CouplingMatrix);
+		rb = OdeFunction(rk6, st, rx, rP, rD1, sD2, sdx2, sO, g_CouplingMatrix);
+		LinearEquationSolver(rk6, rb, rD1, sD2, sdx2, sO, g_CouplingMatrix);
 		
 		// ERROR CONTROLL
-		sD1[threadIdx.x] = 1e30; // Temporary storage for relative error
+		sD2[threadIdx.x] = 1e30; // Temporary storage for relative error
 		for (int i=0; i<2; i++)
 		{
 			rx[i] = rX[i] + ( (37.0/378.0)*rk1[i] + (250.0/621.0)*rk3[i] + (125.0/594.0)*rk4[i] + (512.0/1771.0)*rk6[i] )*sdt;
@@ -244,28 +245,28 @@ __global__ void Integrator(double* g_StateX1, double* g_StateX2, double* g_Param
 			rError = sdt*fabs(rError) + 1e-18;
 			rTolerance = fmax( RELTOL*fmax( fabs(rx[i]), fabs(rX[i]) ), ABSTOL );
 			
-			sD1[threadIdx.x] = fmin( sD1[threadIdx.x], rTolerance / rError );
+			sD2[threadIdx.x] = fmin( sD2[threadIdx.x], rTolerance / rError );
 		}
 		__syncthreads();
 		
 		if ( threadIdx.x < 32 )
-			BlockReductionMin(sD1);
+			BlockReductionMin(sD2);
 		
 		if ( threadIdx.x == 0 )
 		{
-			if ( sD1[0] > 1 )
+			if ( sD2[0] > 1 )
 			{
-				sTimeStepMultiplicator = 0.8*pow(sD1[0], (1.0/5.0));
+				sTimeStepMultiplicator = 0.8*pow(sD2[0], (1.0/5.0));
 				if ( isfinite(sTimeStepMultiplicator) == 1 )
 					sT = sT + sdt;
 			}
 			else
-				sTimeStepMultiplicator = 0.8*pow(sD1[0], (1.0/4.0));
+				sTimeStepMultiplicator = 0.8*pow(sD2[0], (1.0/4.0));
 			
 			if ( isfinite(sTimeStepMultiplicator) == 0 )
 			{
 				sTimeStepMultiplicator = 0.1;
-				sD1[0] == 0.5;
+				sD2[0] == 0.5;
 			}
 			
 			sTimeStepMultiplicator = fmin(sTimeStepMultiplicator, 5.0);
@@ -285,7 +286,7 @@ __global__ void Integrator(double* g_StateX1, double* g_StateX2, double* g_Param
 		__syncthreads();
 		
 		// UPDATE STATE
-		if ( sD1[0] > 1 )
+		if ( sD2[0] > 1 )
 		{
 			for (int i=0; i<2; i++)
 				rX[i] = rx[i];
@@ -297,13 +298,13 @@ __global__ void Integrator(double* g_StateX1, double* g_StateX2, double* g_Param
 	g_StateX2[tid] = rX[1];
 }
 
-__forceinline__ __device__ double OdeFunction(double* F, double t, double* x, double* p, double* sD1, double* sD2, double* sdx2, double& sO, const double* __restrict__ A)
+__forceinline__ __device__ double OdeFunction(double* F, double t, double* x, double* p, double rD1, double* sD2, double* sdx2, double& sO, const double* __restrict__ A)
 {
-	sD1[threadIdx.x] = x[0]; // Temporary storage of bubble radii in sD1
+	sD2[threadIdx.x] = x[0]; // Temporary storage of bubble radii in sD2
 	__syncthreads();
 	
 	if ( threadIdx.x < 32 )
-		BlockReductionOmega(sD1, sO);
+		BlockReductionOmega(sD2, sO);
 	
 	double rx1 = 1.0/x[0];
 	double pg  = pow(rx1, p[10]);
@@ -333,7 +334,7 @@ __forceinline__ __device__ double OdeFunction(double* F, double t, double* x, do
 	__syncthreads();
 	
 	// For linear solver
-	sD1[threadIdx.x] = rD;
+	rD1 = rD;
 	sD2[threadIdx.x] = x[0]*x[0];
 	
 	double b = 0;
@@ -344,7 +345,7 @@ __forceinline__ __device__ double OdeFunction(double* F, double t, double* x, do
 	return b;
 }
 
-__forceinline__ __device__ void LinearEquationSolver(double* F, double b, double* sD1, double* sD2, double* sdx2, double sO, const double* __restrict__ A)
+__forceinline__ __device__ void LinearEquationSolver(double* F, double b, double rD1, double* sD2, double* sdx2, double sO, const double* __restrict__ A)
 {
 	// MODIFIED JACOBI ITERATION
 	double sum;
@@ -356,14 +357,14 @@ __forceinline__ __device__ void LinearEquationSolver(double* F, double b, double
 		bstop = 0;
 	__syncthreads();
 	
-	int Counter = 0;
+	//int Counter = 0;
 	while ( bstop < CLUSTER_SIZE )
 	{
 		sum = 0;
 		for (int i=0; i<CLUSTER_SIZE; i++)
 			sum = sum + A[threadIdx.x+i*CLUSTER_SIZE]*sD2[i]*sdx2[i];
 		
-		sum = sum*sD1[threadIdx.x];
+		sum = sum*rD1;
 		
 		F[1] = sO*(b-sum) + (1.0-sO)*sdx2[threadIdx.x];
 		__syncthreads();
@@ -378,7 +379,7 @@ __forceinline__ __device__ void LinearEquationSolver(double* F, double b, double
 		}
 		__syncthreads();
 		
-		Counter++;
+		//Counter++;
 	}
 	
 	// BICONJUGATE GRADIENT METHOD
