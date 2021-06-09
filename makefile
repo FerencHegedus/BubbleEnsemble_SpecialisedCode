@@ -1,5 +1,5 @@
 INCL_DIR = -I$(HOME)/BubbleEnsemble_ImplicitExtension/SourceCodes
-CMPL_OPT = -O3 --std=c++14 --ptxas-options=-v --gpu-architecture=sm_35 -lineinfo -maxrregcount=128 -w --resource-usage
+CMPL_OPT = -O3 --std=c++14 --ptxas-options=-v --gpu-architecture=sm_35 -lineinfo -maxrregcount=64 -w --resource-usage
 
 all: BubbleEnsemble.exe
 

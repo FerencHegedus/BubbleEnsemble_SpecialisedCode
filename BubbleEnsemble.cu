@@ -28,7 +28,9 @@
 
 #define RELTOL 1e-9
 #define ABSTOL 1e-9
-#define LINTOL 1e-6
+#define LINTOL 1e-9
+
+#define LINSOLV 0
 
 using namespace std;
 
@@ -44,10 +46,12 @@ void LoadCouplingMatrix(double*, string, int);
 void SetInitialConditionsAndParameters(double*, double*, double*, double*, double*, double*);
 
 __global__ void Integrator(double*, double*, double*, const double* __restrict__, int);
-__forceinline__ __device__ double OdeFunction(double*, double, double*, double*, double, double*, double*, double&, const double* __restrict__);
-__forceinline__ __device__ void LinearEquationSolver(double*, double, double, double*, double*, double, const double* __restrict__);
+__forceinline__ __device__ double OdeFunction(double*, double, double*, double*, double&, double*, double*, double&, const double* __restrict__);
+__forceinline__ __device__ void LinearEquationSolver(double*, double, double&, double*, double*, double, const double* __restrict__);
 __forceinline__ __device__ void BlockReductionOmega(double*, double&);
 __forceinline__ __device__ void BlockReductionMin(double*);
+__forceinline__ __device__ void BlockReductionDotProduct(double*, double*, double*, double&);
+__forceinline__ __device__ void BlockReductionSum(double*);
 
 int main()
 {
@@ -88,49 +92,44 @@ int main()
 	cudaMalloc((void**)&d_Parameters, CLUSTER_SIZE * ParameterCombinations * BUBBLE_CONSTANTS * sizeof(double));
 	cudaMalloc((void**)&d_CouplingMatrix, CLUSTER_SIZE * CLUSTER_SIZE * sizeof(double));
 	
-	clock_t SimulationStart = clock();
 	cudaMemcpy(d_StateX1, h_StateX1, CLUSTER_SIZE * ParameterCombinations * sizeof(double), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_StateX2, h_StateX2, CLUSTER_SIZE * ParameterCombinations * sizeof(double), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_Parameters, h_Parameters, CLUSTER_SIZE * ParameterCombinations * BUBBLE_CONSTANTS * sizeof(double), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_CouplingMatrix, h_CouplingMatrix, CLUSTER_SIZE * CLUSTER_SIZE * sizeof(double), cudaMemcpyHostToDevice);
 	
-	// INTEGRATION
+	// INTEGRATION ------------------------------
 	int GridSize = ParameterCombinations;
 	int BlockSize = CLUSTER_SIZE;
 	int NumberOfThreads = CLUSTER_SIZE * ParameterCombinations;
 	
-	
+	clock_t SimulationStart = clock();
 	Integrator<<<GridSize,BlockSize>>>(d_StateX1, d_StateX2, d_Parameters, d_CouplingMatrix, NumberOfThreads);
 	cudaDeviceSynchronize();
 	clock_t SimulationEnd = clock();
 	cout << "Simulation time: " << 1000.0*(SimulationEnd-SimulationStart) / CLOCKS_PER_SEC << "ms" << endl << endl;
 	
-	cudaProfilerStop();
+	cudaMemcpy(h_StateX1, d_StateX1, CLUSTER_SIZE * ParameterCombinations * sizeof(double), cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_StateX2, d_StateX2, CLUSTER_SIZE * ParameterCombinations * sizeof(double), cudaMemcpyDeviceToHost);
 	
-	/*ofstream DataFile;
-	DataFile.open ( "DataTest.txt" );
 	
-	int Width = 18;
+	// SAVA DATA --------------------------------
+	ofstream DataFile;
+	DataFile.open ( "TestData.txt" );
+	
+	int Width = 20;
 	DataFile.precision(13);
 	DataFile.flags(ios::scientific);
 	
-	for (int tid=0; tid<CLUSTER_SIZE*CLUSTER_SIZE; tid++)
+	for (int tid=0; tid<CLUSTER_SIZE*ParameterCombinations; tid++)
 	{
-		//DataFile.width(Width); DataFile << h_Parameters[tid+12*NumberOfThreads] << ',';
-		//DataFile.width(Width); DataFile << h_StateX2[tid] << ',';
-		//DataFile.width(Width); DataFile << h_CouplingMatrix[tid] << ',';
-		//DataFile << '\n';
+		DataFile.width(Width); DataFile << h_Parameters[tid+15*NumberOfThreads] << ',';
+		DataFile.width(Width); DataFile << h_Parameters[tid+16*NumberOfThreads] << ',';
+		DataFile.width(Width); DataFile << h_StateX1[tid] << ',';
+		DataFile.width(Width); DataFile << h_StateX2[tid] << ',';
+		DataFile << '\n';
 	}
 	
 	DataFile.close();
-	
-	
-	/*int ParameterShift = CLUSTER_SIZE*FREQUENCY_RESOLUTION*AMPLITUDE_RESOLUTION*INITIAL_CONDITIONS;
-	for (int i=0; i<ParameterShift; i++)
-	{
-		cout << h_Parameters[i + 15*ParameterShift] << endl;
-	}*/
-	
 }
 
 // GPU SOLVER -------------------------------------------------------------------------------------
@@ -187,6 +186,16 @@ __global__ void Integrator(double* g_StateX1, double* g_StateX2, double* g_Param
 	
 	while ( sStopCondition == 0 )
 	{
+		// CHECK END
+		if ( threadIdx.x == 0 )
+		{
+			if ( sT+sdt > PERIOD )
+			{
+				sdt = PERIOD-sT;
+				sStopCondition = 1;
+			}
+		}
+		
 		// STAGES
 		for (int i=0; i<2; i++)
 			rx[i] = rX[i];
@@ -276,12 +285,6 @@ __global__ void Integrator(double* g_StateX1, double* g_StateX2, double* g_Param
 			
 			sdt = fmin(sdt, 1.0);
 			sdt = fmax(sdt, 1e-12);
-			
-			if ( sT+sdt > PERIOD )
-			{
-				sdt = PERIOD-sT;
-				sStopCondition = 1;
-			}
 		}
 		__syncthreads();
 		
@@ -298,7 +301,7 @@ __global__ void Integrator(double* g_StateX1, double* g_StateX2, double* g_Param
 	g_StateX2[tid] = rX[1];
 }
 
-__forceinline__ __device__ double OdeFunction(double* F, double t, double* x, double* p, double rD1, double* sD2, double* sdx2, double& sO, const double* __restrict__ A)
+__forceinline__ __device__ double OdeFunction(double* F, double t, double* x, double* p, double& rD1, double* sD2, double* sdx2, double& sO, const double* __restrict__ A)
 {
 	sD2[threadIdx.x] = x[0]; // Temporary storage of bubble radii in sD2
 	__syncthreads();
@@ -345,9 +348,8 @@ __forceinline__ __device__ double OdeFunction(double* F, double t, double* x, do
 	return b;
 }
 
-__forceinline__ __device__ void LinearEquationSolver(double* F, double b, double rD1, double* sD2, double* sdx2, double sO, const double* __restrict__ A)
+__forceinline__ __device__ void LinearEquationSolver(double* F, double b, double& rD1, double* sD2, double* sdx2, double sO, const double* __restrict__ A)
 {
-	// MODIFIED JACOBI ITERATION
 	double sum;
 	double error;
 	int tstop = 0;
@@ -357,35 +359,129 @@ __forceinline__ __device__ void LinearEquationSolver(double* F, double b, double
 		bstop = 0;
 	__syncthreads();
 	
-	//int Counter = 0;
-	while ( bstop < CLUSTER_SIZE )
-	{
+	// MODIFIED JACOBI ITERATION
+	#if LINSOLV == 0
+		int Counter = 0;
+		while ( bstop < CLUSTER_SIZE )
+		{
+			sum = 0;
+			for (int i=0; i<CLUSTER_SIZE; i++)
+				sum = sum + A[threadIdx.x+i*CLUSTER_SIZE]*sD2[i]*sdx2[i];
+			
+			sum = sum*rD1;
+			
+			F[1] = sO*(b-sum) + (1.0-sO)*sdx2[threadIdx.x];
+			__syncthreads();
+			
+			error = abs( sdx2[threadIdx.x] - F[1] );
+			sdx2[threadIdx.x] = F[1];
+			
+			if ( ( error < LINTOL ) && ( tstop == 0 ) )
+			{
+				atomicAdd(&bstop,1);
+				tstop = 1;
+			}
+			__syncthreads();
+			
+			Counter++;
+		}
+	#endif
+	
+	// BICONJUGATE GRADIENT METHOD
+	#if LINSOLV == 1
+		double val;
+		double rqt;
+		
+		__shared__ double sr[CLUSTER_SIZE];
+		__shared__ double srt[CLUSTER_SIZE];
+		__shared__ double sp[CLUSTER_SIZE];
+		__shared__ double spt[CLUSTER_SIZE];
+		__shared__ double sq[CLUSTER_SIZE];
+		__shared__ double tmp[CLUSTER_SIZE];
+		__shared__ double srho1;
+		__shared__ double srho2;
+		__shared__ double salpha;
+		__shared__ double sbeta;
+		
+		// Initial residual
 		sum = 0;
 		for (int i=0; i<CLUSTER_SIZE; i++)
 			sum = sum + A[threadIdx.x+i*CLUSTER_SIZE]*sD2[i]*sdx2[i];
 		
-		sum = sum*rD1;
+		sum = sum*rD1 + sdx2[threadIdx.x];
 		
-		F[1] = sO*(b-sum) + (1.0-sO)*sdx2[threadIdx.x];
+		sr[threadIdx.x] = b-sum;
+		srt[threadIdx.x] = sr[threadIdx.x];
 		__syncthreads();
 		
-		error = abs( sdx2[threadIdx.x] - F[1] );
-		sdx2[threadIdx.x] = F[1];
-		
-		if ( ( error < LINTOL ) && ( tstop == 0 ) )
+		// Iteration
+		int Counter = 0;
+		while ( bstop < CLUSTER_SIZE )
 		{
-			atomicAdd(&bstop,1);
-			tstop = 1;
+			BlockReductionDotProduct(sr, srt, tmp, srho1);
+			
+			if ( Counter == 0 )
+			{
+				sp[threadIdx.x] = sr[threadIdx.x];
+				spt[threadIdx.x] = srt[threadIdx.x];
+				
+				if ( fabs(srho1) < 1e-6 )
+					break;
+			} else
+			{
+				if ( threadIdx.x == 0 )
+					sbeta = srho1/srho2;
+				__syncthreads();
+				
+				sp[threadIdx.x] = sr[threadIdx.x] + sbeta*sp[threadIdx.x];
+				spt[threadIdx.x] = srt[threadIdx.x] + sbeta*spt[threadIdx.x];
+			}
+			__syncthreads();
+			
+			sum = 0;
+			for (int i=0; i<CLUSTER_SIZE; i++)
+			{
+				val = rD1*A[threadIdx.x+i*CLUSTER_SIZE]*sD2[i];
+				sum = sum + val*sp[i];
+				tmp[threadIdx.x] = spt[threadIdx.x]*val;
+				__syncthreads();
+				
+				BlockReductionSum(tmp);
+				
+				if ( threadIdx.x == i )
+					rqt = spt[threadIdx.x] + tmp[0];
+				__syncthreads();
+			}
+			sq[threadIdx.x] = sum + sp[threadIdx.x];
+			__syncthreads();
+			
+			BlockReductionDotProduct(spt, sq, tmp, salpha); // salpha is dummy variable
+			
+			if ( threadIdx.x == 0 )
+				salpha = srho1 / tmp[0];
+			__syncthreads();
+			
+			F[1] = sdx2[threadIdx.x] + salpha*sp[threadIdx.x];
+			sr[threadIdx.x] = sr[threadIdx.x] - salpha*sq[threadIdx.x];
+			srt[threadIdx.x] = srt[threadIdx.x] - salpha*rqt;
+			__syncthreads();
+			
+			if ( threadIdx.x == 0 )
+				srho2 = srho1;
+			
+			error = abs( sdx2[threadIdx.x] - F[1] );
+			sdx2[threadIdx.x] = F[1];
+			
+			if ( ( error < LINTOL ) && ( tstop == 0 ) )
+			{
+				atomicAdd(&bstop,1);
+				tstop = 1;
+			}
+			__syncthreads();
+			
+			Counter++;
 		}
-		__syncthreads();
-		
-		//Counter++;
-	}
-	
-	// BICONJUGATE GRADIENT METHOD
-	
-	
-	
+	#endif
 }
 
 __forceinline__ __device__ void BlockReductionOmega(double* x, double& sO)
@@ -419,10 +515,40 @@ __forceinline__ __device__ void BlockReductionMin(double* x)
 	x[threadIdx.x] = ( x[threadIdx.x] < x[threadIdx.x+ 1] ) ? x[threadIdx.x] : x[threadIdx.x+ 1]; __syncwarp();
 }
 
+__forceinline__ __device__ void BlockReductionDotProduct(double* x1, double* x2, double* tmp, double& y)
+{
+	tmp[threadIdx.x] = x1[threadIdx.x] * x2[threadIdx.x];
+	__syncthreads();
+	
+	for (int i=blockDim.x/2; i>0; i>>=1)
+	{
+		if ( threadIdx.x < i )
+			tmp[threadIdx.x] += tmp[threadIdx.x + i];
+		__syncthreads();
+	}
+	__syncthreads();
+	
+	if ( threadIdx.x == 0 )
+		y = tmp[0];
+}
+
+__forceinline__ __device__ void BlockReductionSum(double* tmp)
+{
+	for (int i=blockDim.x/2; i>0; i>>=1)
+	{
+		if ( threadIdx.x < i )
+			tmp[threadIdx.x] += tmp[threadIdx.x + i];
+		__syncthreads();
+	}
+	__syncthreads();
+}
+
 // BUBBLE CLUSTER CONFIGURATION -------------------------------------------------------------------
 
 void SetInitialConditionsAndParameters(double* h_StateX1, double* h_StateX2, double* h_Parameters, double* Frequencies, double* Amplitudes, double* BubbleSizes)
 {
+	srand (time(NULL));
+	
 	int Random;
 	int Resolution = 100001;
 	
@@ -455,7 +581,7 @@ void SetInitialConditionsAndParameters(double* h_StateX1, double* h_StateX2, dou
 	{
 		for (int j=0; j<AMPLITUDE_RESOLUTION; j++) // Amplitude [bar]
 		{
-			for (int k=0; k<INITIAL_CONDITIONS; k++) // Amplitude [bar]
+			for (int k=0; k<INITIAL_CONDITIONS; k++)
 			{
 				// BUBBLE SCOPE
 				//cout << Amplitudes[j] << ", " << Frequencies[i] << endl;
@@ -466,9 +592,9 @@ void SetInitialConditionsAndParameters(double* h_StateX1, double* h_StateX2, dou
 					P6 = BubbleSizes[b]; // equilibrium radius  [mum]
 					
 					Random = (rand() % Resolution);
-					//h_StateX1[GlobalIndex] = RMIN + Random*(RMAX-RMIN)/Resolution;
-					h_StateX1[GlobalIndex] = 1.1;
-					h_StateX2[GlobalIndex] = 0.5;
+					h_StateX1[GlobalIndex] = RMIN + Random*(RMAX-RMIN)/Resolution;
+					//h_StateX1[GlobalIndex] = 1.1;
+					h_StateX2[GlobalIndex] = 0.0;
 					
 					// Dimensional physical parameters
 					Pinf = P7 * 1e5;
