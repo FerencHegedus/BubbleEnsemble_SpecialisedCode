@@ -30,7 +30,9 @@
 #define ABSTOL 1e-9
 #define LINTOL 1e-9
 
+// 0: Modified Jacobi, 1: BiConjugate Gradient
 #define LINSOLV 0
+#define CONSTMEM 1
 
 using namespace std;
 
@@ -52,6 +54,10 @@ __forceinline__ __device__ void BlockReductionOmega(double*, double&);
 __forceinline__ __device__ void BlockReductionMin(double*);
 __forceinline__ __device__ void BlockReductionDotProduct(double*, double*, double*, double&);
 __forceinline__ __device__ void BlockReductionSum(double*);
+
+#if ( (CLUSTER_SIZE < 65) && ( CONSTMEM == 1 ) )
+	__constant__ double d_ConstantCouplingMatrix[CLUSTER_SIZE * CLUSTER_SIZE];
+#endif
 
 int main()
 {
@@ -78,9 +84,16 @@ int main()
 	Logspace(Frequencies, FMIN, FMAX, FREQUENCY_RESOLUTION);
 	Linspace(Amplitudes, PAMIN, PAMAX, AMPLITUDE_RESOLUTION);
 	
-	LoadBubbleSizes(BubbleSizes, "BubbleSizes_N32_D1_d150_RE0.8-5.txt", CLUSTER_SIZE);
-	LoadCouplingMatrix(h_CouplingMatrix, "CouplingMatrix_N32_D1_d150_RE0.8-5.txt", CLUSTER_SIZE);
+	LoadBubbleSizes(BubbleSizes, "DataRepository/BubbleSizes_N32_D1_d150_RE0.8-5.txt", CLUSTER_SIZE);
+	LoadCouplingMatrix(h_CouplingMatrix, "DataRepository/CouplingMatrix_N32_D1_d150_RE0.8-5.txt", CLUSTER_SIZE);
 	SetInitialConditionsAndParameters(h_StateX1, h_StateX2, h_Parameters, Frequencies, Amplitudes, BubbleSizes);
+	
+	#if ( (CLUSTER_SIZE < 65) && ( CONSTMEM == 1 ) )
+		double h_ConstantCouplingMatrix[CLUSTER_SIZE * CLUSTER_SIZE];
+		for (int i=0; i<CLUSTER_SIZE*CLUSTER_SIZE; i++)
+			h_ConstantCouplingMatrix[i] = h_CouplingMatrix[i];
+		cudaMemcpyToSymbol(d_ConstantCouplingMatrix, h_ConstantCouplingMatrix, CLUSTER_SIZE * CLUSTER_SIZE * sizeof(double));
+	#endif
 	
 	// DATA CONFIGURATION DEVICE ----------------
 	double* d_StateX1;
@@ -110,7 +123,6 @@ int main()
 	
 	cudaMemcpy(h_StateX1, d_StateX1, CLUSTER_SIZE * ParameterCombinations * sizeof(double), cudaMemcpyDeviceToHost);
 	cudaMemcpy(h_StateX2, d_StateX2, CLUSTER_SIZE * ParameterCombinations * sizeof(double), cudaMemcpyDeviceToHost);
-	
 	
 	// SAVA DATA --------------------------------
 	ofstream DataFile;
@@ -341,9 +353,13 @@ __forceinline__ __device__ double OdeFunction(double* F, double t, double* x, do
 	sD2[threadIdx.x] = x[0]*x[0];
 	
 	double b = 0;
-	for (int i=0; i<CLUSTER_SIZE; i++)
-		b = b + A[threadIdx.x+i*CLUSTER_SIZE]*cpt[i];
-	
+	#if ( (CLUSTER_SIZE < 65) && ( CONSTMEM == 1 ) )
+		for (int i=0; i<CLUSTER_SIZE; i++)
+			b = b + d_ConstantCouplingMatrix[threadIdx.x+i*CLUSTER_SIZE]*cpt[i];
+	#else
+		for (int i=0; i<CLUSTER_SIZE; i++)
+			b = b + A[threadIdx.x+i*CLUSTER_SIZE]*cpt[i];
+	#endif
 	b = (b+N)*rD;
 	return b;
 }
@@ -365,9 +381,13 @@ __forceinline__ __device__ void LinearEquationSolver(double* F, double b, double
 		while ( bstop < CLUSTER_SIZE )
 		{
 			sum = 0;
-			for (int i=0; i<CLUSTER_SIZE; i++)
-				sum = sum + A[threadIdx.x+i*CLUSTER_SIZE]*sD2[i]*sdx2[i];
-			
+			#if ( (CLUSTER_SIZE < 65) && ( CONSTMEM == 1 ) )
+				for (int i=0; i<CLUSTER_SIZE; i++)
+					sum = sum + d_ConstantCouplingMatrix[threadIdx.x+i*CLUSTER_SIZE]*sD2[i]*sdx2[i];
+			#else
+				for (int i=0; i<CLUSTER_SIZE; i++)
+					sum = sum + A[threadIdx.x+i*CLUSTER_SIZE]*sD2[i]*sdx2[i];
+			#endif
 			sum = sum*rD1;
 			
 			F[1] = sO*(b-sum) + (1.0-sO)*sdx2[threadIdx.x];
@@ -405,9 +425,13 @@ __forceinline__ __device__ void LinearEquationSolver(double* F, double b, double
 		
 		// Initial residual
 		sum = 0;
-		for (int i=0; i<CLUSTER_SIZE; i++)
-			sum = sum + A[threadIdx.x+i*CLUSTER_SIZE]*sD2[i]*sdx2[i];
-		
+		#if ( (CLUSTER_SIZE < 65) && ( CONSTMEM == 1 ) )
+			for (int i=0; i<CLUSTER_SIZE; i++)
+				sum = sum + d_ConstantCouplingMatrix[threadIdx.x+i*CLUSTER_SIZE]*sD2[i]*sdx2[i];
+		#else
+			for (int i=0; i<CLUSTER_SIZE; i++)
+				sum = sum + A[threadIdx.x+i*CLUSTER_SIZE]*sD2[i]*sdx2[i];
+		#endif
 		sum = sum*rD1 + sdx2[threadIdx.x];
 		
 		sr[threadIdx.x] = b-sum;
@@ -441,7 +465,11 @@ __forceinline__ __device__ void LinearEquationSolver(double* F, double b, double
 			sum = 0;
 			for (int i=0; i<CLUSTER_SIZE; i++)
 			{
-				val = rD1*A[threadIdx.x+i*CLUSTER_SIZE]*sD2[i];
+				#if ( (CLUSTER_SIZE < 65) && ( CONSTMEM == 1 ) )
+					val = rD1*d_ConstantCouplingMatrix[threadIdx.x+i*CLUSTER_SIZE]*sD2[i];
+				#else
+					val = rD1*A[threadIdx.x+i*CLUSTER_SIZE]*sD2[i];
+				#endif
 				sum = sum + val*sp[i];
 				tmp[threadIdx.x] = spt[threadIdx.x]*val;
 				__syncthreads();
@@ -592,9 +620,9 @@ void SetInitialConditionsAndParameters(double* h_StateX1, double* h_StateX2, dou
 					P6 = BubbleSizes[b]; // equilibrium radius  [mum]
 					
 					Random = (rand() % Resolution);
-					h_StateX1[GlobalIndex] = RMIN + Random*(RMAX-RMIN)/Resolution;
-					//h_StateX1[GlobalIndex] = 1.1;
-					h_StateX2[GlobalIndex] = 0.0;
+					//h_StateX1[GlobalIndex] = RMIN + Random*(RMAX-RMIN)/Resolution;
+					h_StateX1[GlobalIndex] = 1.1;
+					h_StateX2[GlobalIndex] = 0.5;
 					
 					// Dimensional physical parameters
 					Pinf = P7 * 1e5;
