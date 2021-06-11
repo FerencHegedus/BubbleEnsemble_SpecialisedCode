@@ -8,7 +8,7 @@
 #include <ctime>
 #include <random>
 #include <math.h>
-#include "cuda_profiler_api.h"
+#include <cuda_profiler_api.h>
 
 #define PI 3.14159265358979323846
 
@@ -116,8 +116,10 @@ int main()
 	int NumberOfThreads = CLUSTER_SIZE * ParameterCombinations;
 	
 	clock_t SimulationStart = clock();
+	cudaProfilerStart();
 	Integrator<<<GridSize,BlockSize>>>(d_StateX1, d_StateX2, d_Parameters, d_CouplingMatrix, NumberOfThreads);
 	cudaDeviceSynchronize();
+	cudaProfilerStop();
 	clock_t SimulationEnd = clock();
 	cout << "Simulation time: " << 1000.0*(SimulationEnd-SimulationStart) / CLOCKS_PER_SEC << "ms" << endl << endl;
 	
@@ -142,6 +144,14 @@ int main()
 	}
 	
 	DataFile.close();
+	
+	// FREE MEMORY ------------------------------
+	cudaFree(d_StateX1);
+	cudaFree(d_StateX2);
+	cudaFree(d_Parameters);
+	cudaFree(d_CouplingMatrix);
+	
+	cudaDeviceReset();
 }
 
 // GPU SOLVER -------------------------------------------------------------------------------------
